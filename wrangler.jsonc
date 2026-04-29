@@ -19,5 +19,14 @@
 			"id": "b46a8d441e914afc8a7fe0201328d8fc",
 			"remote": true
 		}
-	]
+	],
+	"observability": {
+		"logs": {
+			"enabled": true,
+			"invocation_logs": true
+		},
+		"traces": {
+			"enabled": false
+		}
+	}
 }
