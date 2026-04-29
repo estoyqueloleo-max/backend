@@ -1,0 +1,18 @@
+# Go artifacts
+bin/
+main
+*.exe
+*.test
+
+# Cloudflare Wrangler
+.dev.vars
+.wrangler/
+dist/
+build/
+node_modules/
+_tinygo/
+wrangler.toml.tmp
+
+# OS files
+.DS_Store
+_tinygo/bin/tinygo
