@@ -29,7 +29,7 @@ var (
 
 func getEnv(key, fallback string) string {
 	if value := cloudflare.Getenv(key); value != "" {
-		return value
+		return strings.TrimSpace(value)
 	}
 	return fallback
 }
@@ -197,8 +197,13 @@ func main() {
 
 		if err := json.Unmarshal([]byte(subStr), s); err != nil {
 			fmt.Fprintf(os.Stderr, "[Push] Error parsing subscription for %s: %v. Data: [%s]\n", targetId, err, subStr)
-			http.Error(w, fmt.Sprintf("Invalid target subscription data: %v (Raw: %s)", err, subStr), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("Invalid target subscription data: %v", err), http.StatusInternalServerError)
 			return
+		}
+
+		// Debug VAPID keys
+		if len(vapidPublicKey) == 0 {
+			fmt.Fprintf(os.Stderr, "[Push] CRITICAL: VAPID_PUBLIC_KEY is empty\n")
 		}
 
 		// Prepare Payload from request body
