@@ -32,23 +32,17 @@ func getEnv(key, fallback string) string {
 }
 
 func normalizeBase64(s string) string {
-	// First convert URL-safe characters
-	s = strings.ReplaceAll(s, "-", "+")
-	s = strings.ReplaceAll(s, "_", "/")
+	s = strings.Join(strings.Fields(s), "")
+	s = strings.Trim(s, "\"")
+	s = strings.Trim(s, "'")
 
-	// Filter out ANY character that is not a valid Base64 character
-	var result strings.Builder
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '+' || r == '/' || r == '=' {
-			result.WriteRune(r)
-		}
-	}
-	s = result.String()
+	// Ensure URL-safe format (replace + with - and / with _)
+	s = strings.ReplaceAll(s, "+", "-")
+	s = strings.ReplaceAll(s, "/", "_")
 
-	// Add Padding (=) if necessary (Go's StdEncoding requires it)
-	for len(s)%4 != 0 {
-		s += "="
-	}
+	// Remove padding (=) - modern webpush libraries expect Raw URL-safe
+	s = strings.TrimRight(s, "=")
+
 	return s
 }
 
