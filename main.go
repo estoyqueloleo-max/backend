@@ -228,10 +228,18 @@ func main() {
 		s.Keys.Auth = normalizeBase64(s.Keys.Auth)
 		s.Keys.P256dh = normalizeBase64(s.Keys.P256dh)
 
+		// Test decoding ourselves to see who is the culprit
+		_, errVPub := base64.StdEncoding.DecodeString(vPub)
+		if errVPub != nil {
+			fmt.Fprintf(os.Stderr, "[Push] DIAGNOSTIC: VAPID Public Key is illegal for base64.StdEncoding: %v\n", errVPub)
+		}
+		_, errP256 := base64.StdEncoding.DecodeString(s.Keys.P256dh)
+		if errP256 != nil {
+			fmt.Fprintf(os.Stderr, "[Push] DIAGNOSTIC: p256dh Key is illegal for base64.StdEncoding: %v\n", errP256)
+		}
+
 		// Debugging logs (safe for logs as they are partial)
-		fmt.Fprintf(os.Stderr, "[Push] VAPID Pub (normalized): %s...\n", vPub[:15])
-		fmt.Fprintf(os.Stderr, "[Push] Sub p256dh (normalized): %s...\n", s.Keys.P256dh[:15])
-		fmt.Fprintf(os.Stderr, "[Push] Sub Auth (len): %d\n", len(s.Keys.Auth))
+		fmt.Fprintf(os.Stderr, "[Push] VAPID Pub (final): %s...\n", vPub[:15])
 
 		// Debug VAPID keys
 		if len(vPub) == 0 {
