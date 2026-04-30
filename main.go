@@ -21,10 +21,7 @@ import (
 )
 
 var (
-	kvNamespace     = getEnv("KV_NAMESPACE", "P2PT")
-	vapidPublicKey  = getEnv("VAPID_PUBLIC_KEY", "")
-	vapidPrivateKey = getEnv("VAPID_PRIVATE_KEY", "")
-	subscriberEmail = getEnv("SUBSCRIBER_EMAIL", "")
+	kvNamespace     = "P2PT"
 )
 
 func getEnv(key, fallback string) string {
@@ -179,6 +176,17 @@ func main() {
 			return
 		}
 
+		// Load keys inside handler
+		vPub := getEnv("VAPID_PUBLIC_KEY", "")
+		vPriv := getEnv("VAPID_PRIVATE_KEY", "")
+		sEmail := getEnv("SUBSCRIBER_EMAIL", "")
+
+		if len(vPub) < 50 {
+			fmt.Fprintf(os.Stderr, "[Push] ERROR: VAPID_PUBLIC_KEY is invalid or empty (len: %d)\n", len(vPub))
+			http.Error(w, "VAPID configuration error", http.StatusInternalServerError)
+			return
+		}
+
 		p2ptKV, _ := kv.NewNamespace(kvNamespace)
 		subStr, err := p2ptKV.GetString("push:"+targetId, nil)
 		if err != nil || subStr == "" {
@@ -214,9 +222,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[Push] Sending to endpoint: %s\n", s.Endpoint)
 		resp, err := webpush.SendNotification(payloadBytes, s, &webpush.Options{
 			HTTPClient:      http.DefaultClient,
-			Subscriber:      subscriberEmail,
-			VAPIDPublicKey:  vapidPublicKey,
-			VAPIDPrivateKey: vapidPrivateKey,
+			Subscriber:      sEmail,
+			VAPIDPublicKey:  vPub,
+			VAPIDPrivateKey: vPriv,
 			TTL:             30,
 		})
 
@@ -250,11 +258,15 @@ func main() {
 			"url":   "/",
 		})
 
+		vPub := getEnv("VAPID_PUBLIC_KEY", "")
+		vPriv := getEnv("VAPID_PRIVATE_KEY", "")
+		sEmail := getEnv("SUBSCRIBER_EMAIL", "")
+
 		resp, err := webpush.SendNotification(payloadBytes, &s, &webpush.Options{
 			HTTPClient:      http.DefaultClient,
-			Subscriber:      subscriberEmail,
-			VAPIDPublicKey:  vapidPublicKey,
-			VAPIDPrivateKey: vapidPrivateKey,
+			Subscriber:      sEmail,
+			VAPIDPublicKey:  vPub,
+			VAPIDPrivateKey: vPriv,
 			TTL:             30,
 		})
 
