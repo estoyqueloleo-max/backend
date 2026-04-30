@@ -32,14 +32,18 @@ func getEnv(key, fallback string) string {
 }
 
 func normalizeBase64(s string) string {
-	// Remove quotes if they were pasted accidentally
-	s = strings.Trim(s, "\"")
-	s = strings.Trim(s, "'")
-	// Remove all whitespace characters (spaces, tabs, newlines)
-	s = strings.Join(strings.Fields(s), "")
+	// First convert URL-safe characters
 	s = strings.ReplaceAll(s, "-", "+")
 	s = strings.ReplaceAll(s, "_", "/")
-	return s
+
+	// Filter out ANY character that is not a valid Base64 character
+	var result strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '+' || r == '/' || r == '=' {
+			result.WriteRune(r)
+		}
+	}
+	return result.String()
 }
 
 func generateAuthToken(salt string) string {
