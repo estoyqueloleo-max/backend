@@ -210,7 +210,7 @@ func main() {
 		}
 
 		// Debug VAPID keys
-		if len(vapidPublicKey) == 0 {
+		if len(vPub) == 0 {
 			fmt.Fprintf(os.Stderr, "[Push] CRITICAL: VAPID_PUBLIC_KEY is empty\n")
 		}
 
