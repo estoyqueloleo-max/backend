@@ -31,6 +31,13 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+func normalizeBase64(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "-", "+")
+	s = strings.ReplaceAll(s, "_", "/")
+	return s
+}
+
 func generateAuthToken(salt string) string {
 	if salt == "" {
 		return "public"
@@ -177,8 +184,8 @@ func main() {
 		}
 
 		// Load keys inside handler
-		vPub := getEnv("VAPID_PUBLIC_KEY", "")
-		vPriv := getEnv("VAPID_PRIVATE_KEY", "")
+		vPub := normalizeBase64(getEnv("VAPID_PUBLIC_KEY", ""))
+		vPriv := normalizeBase64(getEnv("VAPID_PRIVATE_KEY", ""))
 		sEmail := getEnv("SUBSCRIBER_EMAIL", "")
 
 		if len(vPub) < 50 {
@@ -208,6 +215,10 @@ func main() {
 			http.Error(w, fmt.Sprintf("Invalid target subscription data: %v", err), http.StatusInternalServerError)
 			return
 		}
+
+		// Normalize subscription keys too
+		s.Keys.Auth = normalizeBase64(s.Keys.Auth)
+		s.Keys.P256dh = normalizeBase64(s.Keys.P256dh)
 
 		// Debug VAPID keys
 		if len(vPub) == 0 {
@@ -258,9 +269,12 @@ func main() {
 			"url":   "/",
 		})
 
-		vPub := getEnv("VAPID_PUBLIC_KEY", "")
-		vPriv := getEnv("VAPID_PRIVATE_KEY", "")
+		vPub := normalizeBase64(getEnv("VAPID_PUBLIC_KEY", ""))
+		vPriv := normalizeBase64(getEnv("VAPID_PRIVATE_KEY", ""))
 		sEmail := getEnv("SUBSCRIBER_EMAIL", "")
+
+		s.Keys.Auth = normalizeBase64(s.Keys.Auth)
+		s.Keys.P256dh = normalizeBase64(s.Keys.P256dh)
 
 		resp, err := webpush.SendNotification(payloadBytes, &s, &webpush.Options{
 			HTTPClient:      http.DefaultClient,
