@@ -32,7 +32,10 @@ func getEnv(key, fallback string) string {
 }
 
 func normalizeBase64(s string) string {
-	// Remove all whitespace characters (spaces, tabs, newlines) anywhere in the string
+	// Remove quotes if they were pasted accidentally
+	s = strings.Trim(s, "\"")
+	s = strings.Trim(s, "'")
+	// Remove all whitespace characters (spaces, tabs, newlines)
 	s = strings.Join(strings.Fields(s), "")
 	s = strings.ReplaceAll(s, "-", "+")
 	s = strings.ReplaceAll(s, "_", "/")
@@ -222,8 +225,8 @@ func main() {
 		s.Keys.P256dh = normalizeBase64(s.Keys.P256dh)
 
 		// Debugging logs (safe for logs as they are partial)
-		fmt.Fprintf(os.Stderr, "[Push] VAPID Pub (partial): %s...\n", vPub[:10])
-		fmt.Fprintf(os.Stderr, "[Push] Sub p256dh (partial): %s...\n", s.Keys.P256dh[:10])
+		fmt.Fprintf(os.Stderr, "[Push] VAPID Pub (normalized): %s...\n", vPub[:15])
+		fmt.Fprintf(os.Stderr, "[Push] Sub p256dh (normalized): %s...\n", s.Keys.P256dh[:15])
 		fmt.Fprintf(os.Stderr, "[Push] Sub Auth (len): %d\n", len(s.Keys.Auth))
 
 		// Debug VAPID keys
