@@ -43,7 +43,13 @@ func normalizeBase64(s string) string {
 			result.WriteRune(r)
 		}
 	}
-	return result.String()
+	s = result.String()
+
+	// Add Padding (=) if necessary (Go's StdEncoding requires it)
+	for len(s)%4 != 0 {
+		s += "="
+	}
+	return s
 }
 
 func generateAuthToken(salt string) string {
