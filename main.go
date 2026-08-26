@@ -20,31 +20,12 @@ import (
 	"github.com/syumai/workers/cloudflare/kv"
 )
 
-var (
-	kvNamespace     = "P2PT"
+const (
+	kvNamespace     = "PINGO_AUTH"
+	vapidPublicKey  = "BEJ45uzzL_hw2MpJaxTw8Jwk-hbqJE3D5GI7TWMBaYOLkKoVsJQJGVZrpDOASMBpsCpF3bFI2LFZaZecqAWfAKk"
+	vapidPrivateKey = "uwHBVq5KHmevNRtVBTP62G_n6mFeH7vOQsVlpG_YHWU"
+	subscriberEmail = "admin@accreativos.com"
 )
-
-func getEnv(key, fallback string) string {
-	if value := cloudflare.Getenv(key); value != "" {
-		return strings.TrimSpace(value)
-	}
-	return fallback
-}
-
-func normalizeBase64(s string) string {
-	s = strings.Join(strings.Fields(s), "")
-	s = strings.Trim(s, "\"")
-	s = strings.Trim(s, "'")
-
-	// Ensure URL-safe format (replace + with - and / with _)
-	s = strings.ReplaceAll(s, "+", "-")
-	s = strings.ReplaceAll(s, "/", "_")
-
-	// Remove padding (=) - modern webpush libraries expect Raw URL-safe
-	s = strings.TrimRight(s, "=")
-
-	return s
-}
 
 func generateAuthToken(salt string) string {
 	if salt == "" {
@@ -58,11 +39,11 @@ func generateAuthToken(salt string) string {
 }
 
 func checkAuth(req *http.Request, userPubKey string) (bool, string) {
-	p2ptKV, err := kv.NewNamespace(kvNamespace)
+	pingoKV, err := kv.NewNamespace(kvNamespace)
 	if err != nil {
 		return false, "KV Init Error"
 	}
-	userDataStr, err := p2ptKV.GetString(userPubKey, nil)
+	userDataStr, err := pingoKV.GetString(userPubKey, nil)
 	if err != nil || userDataStr == "" {
 		return false, "User not authorized"
 	}
@@ -70,7 +51,7 @@ func checkAuth(req *http.Request, userPubKey string) (bool, string) {
 		Salt string `json:"salt"`
 	}
 	json.Unmarshal([]byte(userDataStr), &userData)
-	clientToken := req.Header.Get("X-P2PT-Auth")
+	clientToken := req.Header.Get("X-Pingo-Auth")
 	if clientToken == "" {
 		return false, "Missing Auth Token"
 	}
@@ -101,7 +82,7 @@ func main() {
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("P2PT Cloud is active"))
+		w.Write([]byte("Pingo Cloud is active"))
 	})
 
 	mux.HandleFunc("/auth/register", func(w http.ResponseWriter, req *http.Request) {
@@ -113,9 +94,9 @@ func main() {
 			http.Error(w, "Invalid Payload", http.StatusBadRequest)
 			return
 		}
-		p2ptKV, _ := kv.NewNamespace(kvNamespace)
+		pingoKV, _ := kv.NewNamespace(kvNamespace)
 		data, _ := json.Marshal(payload)
-		p2ptKV.PutString(payload.UserPubKey, string(data), nil)
+		pingoKV.PutString(payload.UserPubKey, string(data), nil)
 		fmt.Fprintf(os.Stderr, "[Auth] Registered: %s\n", payload.UserPubKey)
 		w.Write([]byte("User registered"))
 	})
@@ -126,10 +107,10 @@ func main() {
 			http.Error(w, msg, http.StatusUnauthorized)
 			return
 		}
-		turnURL := getEnv("TURN_URL", "")
-		turnUser := getEnv("TURN_USERNAME", "")
-		turnCred := getEnv("TURN_CREDENTIAL", "")
-		turnSecret := getEnv("TURN_STATIC_AUTH_SECRET", "")
+		turnURL := cloudflare.Getenv("TURN_URL")
+		turnUser := cloudflare.Getenv("TURN_USERNAME")
+		turnCred := cloudflare.Getenv("TURN_CREDENTIAL")
+		turnSecret := cloudflare.Getenv("TURN_STATIC_AUTH_SECRET")
 
 		if turnUser != "" && turnCred != "" {
 			json.NewEncoder(w).Encode(map[string]any{
@@ -168,13 +149,13 @@ func main() {
 			http.Error(w, "UserPubKey required", http.StatusBadRequest)
 			return
 		}
-		p2ptKV, _ := kv.NewNamespace(kvNamespace)
+		pingoKV, _ := kv.NewNamespace(kvNamespace)
 		subscriptionStr, _ := json.Marshal(subscription)
-		p2ptKV.PutString("push:"+userPubKey, string(subscriptionStr), nil)
+		pingoKV.PutString("push:"+userPubKey, string(subscriptionStr), nil)
 		if salt != "" {
 			authPayload := map[string]string{"userPublicKey": userPubKey, "salt": salt}
 			authData, _ := json.Marshal(authPayload)
-			p2ptKV.PutString(userPubKey, string(authData), nil)
+			pingoKV.PutString(userPubKey, string(authData), nil)
 		}
 		fmt.Fprintf(os.Stderr, "[Push] Subscribed: %s\n", userPubKey)
 		w.Write([]byte("Cloud activated"))
@@ -191,19 +172,8 @@ func main() {
 			return
 		}
 
-		// Load keys inside handler
-		vPub := normalizeBase64(getEnv("VAPID_PUBLIC_KEY", ""))
-		vPriv := normalizeBase64(getEnv("VAPID_PRIVATE_KEY", ""))
-		sEmail := getEnv("SUBSCRIBER_EMAIL", "")
-
-		if len(vPub) < 50 {
-			fmt.Fprintf(os.Stderr, "[Push] ERROR: VAPID_PUBLIC_KEY is invalid or empty (len: %d)\n", len(vPub))
-			http.Error(w, "VAPID configuration error", http.StatusInternalServerError)
-			return
-		}
-
-		p2ptKV, _ := kv.NewNamespace(kvNamespace)
-		subStr, err := p2ptKV.GetString("push:"+targetId, nil)
+		pingoKV, _ := kv.NewNamespace(kvNamespace)
+		subStr, err := pingoKV.GetString("push:"+targetId, nil)
 		if err != nil || subStr == "" {
 			fmt.Fprintf(os.Stderr, "[Push] Target %s not found in KV\n", targetId)
 			http.Error(w, "Target offline or not subscribed", http.StatusNotFound)
@@ -220,30 +190,8 @@ func main() {
 
 		if err := json.Unmarshal([]byte(subStr), s); err != nil {
 			fmt.Fprintf(os.Stderr, "[Push] Error parsing subscription for %s: %v. Data: [%s]\n", targetId, err, subStr)
-			http.Error(w, fmt.Sprintf("Invalid target subscription data: %v", err), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("Invalid target subscription data: %v (Raw: %s)", err, subStr), http.StatusInternalServerError)
 			return
-		}
-
-		// Normalize subscription keys too
-		s.Keys.Auth = normalizeBase64(s.Keys.Auth)
-		s.Keys.P256dh = normalizeBase64(s.Keys.P256dh)
-
-		// Test decoding ourselves to see who is the culprit
-		_, errVPub := base64.StdEncoding.DecodeString(vPub)
-		if errVPub != nil {
-			fmt.Fprintf(os.Stderr, "[Push] DIAGNOSTIC: VAPID Public Key is illegal for base64.StdEncoding: %v\n", errVPub)
-		}
-		_, errP256 := base64.StdEncoding.DecodeString(s.Keys.P256dh)
-		if errP256 != nil {
-			fmt.Fprintf(os.Stderr, "[Push] DIAGNOSTIC: p256dh Key is illegal for base64.StdEncoding: %v\n", errP256)
-		}
-
-		// Debugging logs (safe for logs as they are partial)
-		fmt.Fprintf(os.Stderr, "[Push] VAPID Pub (final): %s...\n", vPub[:15])
-
-		// Debug VAPID keys
-		if len(vPub) == 0 {
-			fmt.Fprintf(os.Stderr, "[Push] CRITICAL: VAPID_PUBLIC_KEY is empty\n")
 		}
 
 		// Prepare Payload from request body
@@ -254,9 +202,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[Push] Sending to endpoint: %s\n", s.Endpoint)
 		resp, err := webpush.SendNotification(payloadBytes, s, &webpush.Options{
 			HTTPClient:      http.DefaultClient,
-			Subscriber:      sEmail,
-			VAPIDPublicKey:  vPub,
-			VAPIDPrivateKey: vPriv,
+			Subscriber:      subscriberEmail,
+			VAPIDPublicKey:  vapidPublicKey,
+			VAPIDPrivateKey: vapidPrivateKey,
 			TTL:             30,
 		})
 
@@ -274,8 +222,8 @@ func main() {
 	// Test push endpoint (no auth)
 	mux.HandleFunc("/push/test/{peerId}", func(w http.ResponseWriter, req *http.Request) {
 		targetId := req.PathValue("peerId")
-		p2ptKV, _ := kv.NewNamespace(kvNamespace)
-		subStr, _ := p2ptKV.GetString("push:"+targetId, nil)
+		pingoKV, _ := kv.NewNamespace(kvNamespace)
+		subStr, _ := pingoKV.GetString("push:"+targetId, nil)
 		if subStr == "" {
 			http.Error(w, "Target not registered", 404)
 			return
@@ -285,23 +233,16 @@ func main() {
 		json.Unmarshal([]byte(subStr), &s)
 
 		payloadBytes, _ := json.Marshal(map[string]string{
-			"title": "Prueba de P2PT",
+			"title": "Prueba de Pingo",
 			"body":  "Si ves esto, la entrega funciona a pesar de la seguridad.",
 			"url":   "/",
 		})
 
-		vPub := normalizeBase64(getEnv("VAPID_PUBLIC_KEY", ""))
-		vPriv := normalizeBase64(getEnv("VAPID_PRIVATE_KEY", ""))
-		sEmail := getEnv("SUBSCRIBER_EMAIL", "")
-
-		s.Keys.Auth = normalizeBase64(s.Keys.Auth)
-		s.Keys.P256dh = normalizeBase64(s.Keys.P256dh)
-
 		resp, err := webpush.SendNotification(payloadBytes, &s, &webpush.Options{
 			HTTPClient:      http.DefaultClient,
-			Subscriber:      sEmail,
-			VAPIDPublicKey:  vPub,
-			VAPIDPrivateKey: vPriv,
+			Subscriber:      subscriberEmail,
+			VAPIDPublicKey:  vapidPublicKey,
+			VAPIDPrivateKey: vapidPrivateKey,
 			TTL:             30,
 		})
 
@@ -349,7 +290,7 @@ func main() {
 		for name, values := range req.Header {
 			normalizedName := strings.ToLower(name)
 			// Skip headers that should be handled by the proxy or are internal
-			if normalizedName == "host" || normalizedName == "x-p2pt-auth" ||
+			if normalizedName == "host" || normalizedName == "x-pingo-auth" ||
 				normalizedName == "cf-ray" || normalizedName == "cf-connecting-ip" ||
 				normalizedName == "x-real-ip" || normalizedName == "x-forwarded-for" {
 				continue
@@ -387,7 +328,7 @@ func main() {
 	c := cors.New(cors.Options{
 		AllowedOrigins: []string{"*"},
 		AllowedMethods: []string{"GET", "POST", "OPTIONS"},
-		AllowedHeaders: []string{"Content-Type", "X-P2PT-Auth"},
+		AllowedHeaders: []string{"Content-Type", "X-Pingo-Auth"},
 	})
 	handler := recoverMiddleware(c.Handler(mux))
 

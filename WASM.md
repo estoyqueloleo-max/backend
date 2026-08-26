@@ -1,24 +1,24 @@
-# Go/WASM Debugging Guide for Cloudflare Workers
+# Guía de Depuración Go/WASM en Cloudflare Workers
 
-This guide summarizes the lessons learned while migrating P2PT to Cloudflare Workers using Go and WebAssembly.
+Esta guía resume las lecciones aprendidas al migrar Pingo a Cloudflare Workers usando Go y WebAssembly.
 
-## Common Errors and Solutions
+## Errores Comunes y Soluciones
 
 ### 1. Error 1101 (Worker threw a JavaScript exception)
-This is the most common error. In the Go context, it usually means:
-- **Go code panic**: Something caused a crash (e.g., nil pointer dereference).
-- **Missing Bindings**: The `worker.mjs` file cannot find the KV bindings or environment variables that the Go code attempts to use.
-- **Wrapper Incompatibility**: You are using a binary compiled with standard `Go` but the `wasm_exec.js` file is from `TinyGo` (or vice versa).
+Este es el error más común. En el contexto de Go, suele significar:
+- **Pánico en el código Go**: Algo ha causado un crash (ej. acceso a puntero nil).
+- **Falta de Bindings**: El archivo `worker.mjs` no encuentra los bindings de KV o variables de entorno que el código Go intenta usar.
+- **Incompatibilidad de Wrapper**: Estás usando un binario compilado con `Go` estándar pero el archivo `wasm_exec.js` es de `TinyGo` (o viceversa).
 
-### 2. "Hung" Code
-Occurs when Cloudflare detects that the Worker is not returning a response.
-- **Cause in Go**: The Go runtime is blocking the event loop.
-- **Solution**: Avoid reading request bodies in routes that don't have them (like `OPTIONS` or accidental `GET`s). Ensure that `w.WriteHeader` is always called or something is written to the body.
+### 2. Código "Hung" (Colgado)
+Ocurre cuando Cloudflare detecta que el Worker no devuelve una respuesta.
+- **Causa en Go**: El runtime de Go está bloqueando el bucle de eventos.
+- **Solución**: Evitar leer cuerpos de peticiones en rutas que no los tienen (como `OPTIONS` o `GET` accidentales). Asegurarse de que siempre se llama a `w.WriteHeader` o se escribe algo en el cuerpo.
 
-## Debugging Strategy
+## Estrategia de Depuración (Debug)
 
-### Panic Recovery
-Implement a `defer recover()` in the main handler to capture internal errors and return them as text:
+### Recuperación de Pánicos (Panic Recovery)
+Implementar un `defer recover()` en el manejador principal para capturar errores internos y devolverlos como texto:
 
 ```go
 func handler(w http.ResponseWriter, req *http.Request) {
@@ -29,33 +29,33 @@ func handler(w http.ResponseWriter, req *http.Request) {
             fmt.Fprintf(w, "Worker Panic: %v", r)
         }
     }()
-    // ... your logic ...
+    // ... tu lógica ...
 }
 ```
 
-### Real-time Logs
-Use `fmt.Printf` or `println` in Go. To view them:
-1. Run `npx wrangler tail` in your terminal.
-2. Or use the **"Logs" -> "Real-time logs"** tab in the Cloudflare dashboard.
+### Logs en Tiempo Real
+Usa `fmt.Printf` o `println` en Go. Para verlos:
+1. Ejecuta `npx wrangler tail` en tu terminal.
+2. O usa la pestaña **"Logs" -> "Real-time logs"** en el panel de Cloudflare.
 
-## Compilers: TinyGo vs Standard Go
+## Compiladores: TinyGo vs Standard Go
 
-| Feature | TinyGo | Standard Go (`GOOS=js`) |
+| Característica | TinyGo | Standard Go (`GOOS=js`) |
 | :--- | :--- | :--- |
-| **WASM Size** | Small (~500KB - 1MB) | Large (~5MB - 10MB) |
-| **`net/http` Stability** | Medium (may cause "Hung" errors) | Very High |
-| **Reflection** | Limited | Full |
-| **Goroutines** | Limited (different scheduler) | Full |
+| **Tamaño WASM** | Pequeño (~500KB - 1MB) | Grande (~5MB - 10MB) |
+| **Estabilidad `net/http`** | Media (puede dar errores "Hung") | Muy Alta |
+| **Reflexión** | Limitada | Completa |
+| **Gorrutinas** | Limitadas (scheduler distinto) | Completas |
 
 > [!IMPORTANT]
-> If you switch between compilers, you **MUST** regenerate the JS assets:
-> - For Standard Go: `go run github.com/syumai/workers/cmd/workers-assets-gen -mode=go`
-> - For TinyGo: `go run github.com/syumai/workers/cmd/workers-assets-gen`
+> Si cambias entre compiladores, **DEBES** regenerar los activos de JS:
+> - Para Standard Go: `go run github.com/syumai/workers/cmd/workers-assets-gen -mode=go`
+> - Para TinyGo: `go run github.com/syumai/workers/cmd/workers-assets-gen`
 
-## Size Limits
-- **Free Workers**: 1MB limit on the final script (compressed).
-- **Paid Workers**: Up to 10MB+.
-- If your `app.wasm` exceeds 1MB, you will likely need to use Standard Go and have a paid account, or optimize heavily with TinyGo.
+## Límites de Tamaño
+- **Workers Free**: Límite de 1MB en el script final (comprimido).
+- **Workers Paid**: Hasta 10MB+.
+- Si tu `app.wasm` supera los 1MB, es probable que necesites usar Standard Go y tener una cuenta de pago, o optimizar mucho con TinyGo.
 
-## Local Testing
-Always use `npx wrangler dev` to test before deploying. If it works locally but not remotely, check that the KV Namespace IDs in `wrangler.jsonc` are correct for the production environment.
+## Probando en Local
+Usa siempre `npx wrangler dev` para probar antes de desplegar. Si funciona en local pero no en remoto, revisa que los IDs de los KV Namespaces en `wrangler.jsonc` sean correctos para el entorno de producción.

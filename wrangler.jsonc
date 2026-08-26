@@ -4,7 +4,7 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "backend",
+	"name": "pingo-cloud",
 	"main": "./build/worker.mjs",
 	"compatibility_date": "2025-05-09",
 	"build": {
@@ -15,18 +15,14 @@
 	},
 	"kv_namespaces": [
 		{
-			"binding": "P2PT",
-			"id": "b46a8d441e914afc8a7fe0201328d8fc",
-			"remote": true
+			"binding": "PINGO_AUTH",
+			"id": "32442895dc374e33a2a51431c82cfe20"
 		}
 	],
-	"observability": {
-		"logs": {
-			"enabled": true,
-			"invocation_logs": true
-		},
-		"traces": {
-			"enabled": false
-		}
+	"vars": {
+		"TURN_URL": "turn:global.relay.metered.ca:80",
+		"TURN_USERNAME": "fdae8eb2080d90479c02149c",
+		"TURN_CREDENTIAL": "M4xeXxJgtU47kqAH",
+		"TURN_STATIC_AUTH_SECRET": ""
 	}
 }
