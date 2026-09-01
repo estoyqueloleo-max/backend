@@ -4,7 +4,7 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "pingo-cloud",
+	"name": "backend",
 	"main": "./build/worker.mjs",
 	"compatibility_date": "2025-05-09",
 	"build": {
@@ -16,7 +16,7 @@
 	"kv_namespaces": [
 		{
 			"binding": "PINGO_AUTH",
-			"id": "32442895dc374e33a2a51431c82cfe20"
+			"id": "b46a8d441e914afc8a7fe0201328d8fc"
 		}
 	],
 	"vars": {
