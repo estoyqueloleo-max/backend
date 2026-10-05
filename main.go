@@ -388,6 +388,300 @@ func main() {
 		})
 	})
 
+	// /api/v1/ddns/device-code: RFC 8628 Device Authorization Request
+	mux.HandleFunc("/api/v1/ddns/device-code", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var payload struct {
+			ApplianceID string `json:"applianceId"`
+			Subdomain   string `json:"subdomain"`
+		}
+		json.NewDecoder(req.Body).Decode(&payload)
+		if payload.ApplianceID == "" {
+			http.Error(w, "applianceId is required", http.StatusBadRequest)
+			return
+		}
+
+		deviceCode := generateAuthToken(fmt.Sprintf("%s-%d", payload.ApplianceID, time.Now().UnixNano()))
+		// Generar un userCode legible (ej: ABCD-1234)
+		userCodeSeed := fmt.Sprintf("%x", sha256.Sum256([]byte(deviceCode)))
+		userCode := fmt.Sprintf("%s-%s", strings.ToUpper(userCodeSeed[:4]), strings.ToUpper(userCodeSeed[4:8]))
+
+		pingoKV, err := kv.NewNamespace(kvNamespace)
+		if err != nil {
+			http.Error(w, "KV Error", http.StatusInternalServerError)
+			return
+		}
+
+		reqHost := req.Host
+		if reqHost == "" {
+			reqHost = "pingo-cloud.accreativos.com"
+		}
+		proto := "https"
+		verificationURI := fmt.Sprintf("%s://%s/ddns/activate", proto, reqHost)
+		verificationURIComplete := fmt.Sprintf("%s?code=%s", verificationURI, userCode)
+
+		deviceSession := map[string]any{
+			"deviceCode":   deviceCode,
+			"userCode":     userCode,
+			"applianceId":  payload.ApplianceID,
+			"subdomain":    payload.Subdomain,
+			"status":       "authorization_pending",
+			"secretToken":  "",
+			"expiresAt":    time.Now().Unix() + 600, // 10 minutos
+		}
+
+		data, _ := json.Marshal(deviceSession)
+		pingoKV.PutString("devcode:"+deviceCode, string(data), nil)
+		pingoKV.PutString("usercode:"+userCode, deviceCode, nil)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"device_code":               deviceCode,
+			"user_code":                 userCode,
+			"verification_uri":          verificationURI,
+			"verification_uri_complete": verificationURIComplete,
+			"expires_in":                600,
+			"interval":                  2,
+		})
+	})
+
+	// /api/v1/ddns/device-token: Polling del CLI para recoger el token una vez aprobado
+	mux.HandleFunc("/api/v1/ddns/device-token", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var payload struct {
+			DeviceCode string `json:"device_code"`
+		}
+		json.NewDecoder(req.Body).Decode(&payload)
+		if payload.DeviceCode == "" {
+			http.Error(w, "device_code is required", http.StatusBadRequest)
+			return
+		}
+
+		pingoKV, err := kv.NewNamespace(kvNamespace)
+		if err != nil {
+			http.Error(w, "KV Error", http.StatusInternalServerError)
+			return
+		}
+
+		sessionStr, err := pingoKV.GetString("devcode:"+payload.DeviceCode, nil)
+		if err != nil || sessionStr == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant", "error_description": "Device code not found or expired"})
+			return
+		}
+
+		var session struct {
+			DeviceCode  string `json:"deviceCode"`
+			UserCode    string `json:"userCode"`
+			ApplianceID string `json:"applianceId"`
+			Subdomain   string `json:"subdomain"`
+			Status      string `json:"status"`
+			SecretToken string `json:"secretToken"`
+			ExpiresAt   int64  `json:"expiresAt"`
+		}
+		json.Unmarshal([]byte(sessionStr), &session)
+
+		if time.Now().Unix() > session.ExpiresAt {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "expired_token", "error_description": "The device authorization has expired"})
+			return
+		}
+
+		if session.Status == "authorization_pending" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "authorization_pending", "error_description": "Waiting for user authorization"})
+			return
+		}
+
+		if session.Status != "approved" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"error": "access_denied", "error_description": "Device authorization denied"})
+			return
+		}
+
+		// Aprobado con éxito: devolver credenciales completas
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"applianceId":  session.ApplianceID,
+			"subdomain":    session.Subdomain,
+			"secret_token": session.SecretToken,
+			"token_type":   "Bearer",
+		})
+	})
+
+	// /ddns/activate: Página web interactiva responsive para que el usuario introduzca o confirme el código
+	mux.HandleFunc("/ddns/activate", func(w http.ResponseWriter, req *http.Request) {
+		code := req.URL.Query().Get("code")
+		html := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Autorizar Appliance — Cloud Hub</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 32px; max-width: 440px; width: 100%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); }
+    h1 { font-size: 1.5rem; margin-top: 0; display: flex; align-items: center; gap: 10px; color: #38bdf8; }
+    p { color: #94a3b8; font-size: 0.95rem; line-height: 1.5; }
+    .input-group { margin: 24px 0; }
+    label { display: block; font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #cbd5e1; margin-bottom: 8px; }
+    input { width: 100%; padding: 14px; font-size: 1.25rem; font-weight: bold; text-align: center; letter-spacing: 0.2em; background: #0f172a; border: 2px solid #38bdf8; border-radius: 8px; color: #fff; box-sizing: border-box; outline: none; }
+    button { width: 100%; padding: 14px; background: #0284c7; color: white; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+    button:hover { background: #0369a1; }
+    #msg { margin-top: 16px; padding: 12px; border-radius: 8px; display: none; font-size: 0.95rem; text-align: center; }
+    .success { background: #064e3b; color: #6ee7b7; border: 1px solid #059669; }
+    .error { background: #7f1d1d; color: #fca5a5; border: 1px solid #dc2626; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🛡️ Cloud Hub DDNS</h1>
+    <p>Introduce o confirma el código de autorización mostrado en la terminal de tu appliance para vincularlo a tu dominio.</p>
+    <div class="input-group">
+      <label for="code">Código de Dispositivo</label>
+      <input id="code" value="%s" placeholder="ABCD-1234" maxlength="9" autofocus autocomplete="off" autocorrect="off">
+    </div>
+    <button id="btn-auth" onclick="approve()">Autorizar Dispositivo</button>
+    <div id="msg"></div>
+  </div>
+  <script>
+    async function approve() {
+      const code = document.getElementById('code').value.trim();
+      const msg = document.getElementById('msg');
+      const btn = document.getElementById('btn-auth');
+      if (!code) return;
+      btn.disabled = true;
+      btn.innerText = 'Autorizando...';
+      try {
+        const res = await fetch('/api/v1/ddns/device-approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_code: code })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          msg.className = 'success';
+          msg.innerHTML = '✅ ¡Dispositivo autorizado!<br><small>Puedes volver a tu terminal. El appliance se ha configurado automáticamente.</small>';
+          msg.style.display = 'block';
+          btn.style.display = 'none';
+        } else {
+          msg.className = 'error';
+          msg.innerText = '❌ Error: ' + (data.error_description || data.error || 'Código no válido');
+          msg.style.display = 'block';
+          btn.disabled = false;
+          btn.innerText = 'Reintentar';
+        }
+      } catch (e) {
+        msg.className = 'error';
+        msg.innerText = '❌ Error de red: ' + e.message;
+        msg.style.display = 'block';
+        btn.disabled = false;
+        btn.innerText = 'Reintentar';
+      }
+    }
+  </script>
+</body>
+</html>`, code)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(html))
+	})
+
+	// /api/v1/ddns/device-approve: Acción al pulsar "Autorizar" en la web
+	mux.HandleFunc("/api/v1/ddns/device-approve", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var payload struct {
+			UserCode string `json:"user_code"`
+		}
+		json.NewDecoder(req.Body).Decode(&payload)
+		userCode := strings.ToUpper(strings.TrimSpace(payload.UserCode))
+
+		pingoKV, err := kv.NewNamespace(kvNamespace)
+		if err != nil {
+			http.Error(w, "KV Error", http.StatusInternalServerError)
+			return
+		}
+
+		deviceCode, err := pingoKV.GetString("usercode:"+userCode, nil)
+		if err != nil || deviceCode == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "not_found", "error_description": "Código de autorización no encontrado o caducado"})
+			return
+		}
+
+		sessionStr, err := pingoKV.GetString("devcode:"+deviceCode, nil)
+		if err != nil || sessionStr == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "not_found", "error_description": "Sesión de dispositivo expirada"})
+			return
+		}
+
+		var session struct {
+			DeviceCode  string `json:"deviceCode"`
+			UserCode    string `json:"userCode"`
+			ApplianceID string `json:"applianceId"`
+			Subdomain   string `json:"subdomain"`
+			Status      string `json:"status"`
+			SecretToken string `json:"secretToken"`
+			ExpiresAt   int64  `json:"expiresAt"`
+		}
+		json.Unmarshal([]byte(sessionStr), &session)
+
+		// Generar token secreto de larga duración para el appliance
+		generatedSecretToken := generateAuthToken(fmt.Sprintf("secret-%s-%d", session.ApplianceID, time.Now().UnixNano()))
+
+		defaultDomain := cloudflare.Getenv("DEFAULT_DDNS_DOMAIN")
+		if defaultDomain == "" {
+			defaultDomain = "appliances.klitosan.com"
+		}
+		subdomain := session.Subdomain
+		if subdomain == "" {
+			subdomain = fmt.Sprintf("%s.%s", strings.ToLower(session.ApplianceID), defaultDomain)
+		}
+
+		tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(generatedSecretToken)))
+		applianceRecord := map[string]any{
+			"applianceId": session.ApplianceID,
+			"secretHash":  tokenHash,
+			"subdomain":   subdomain,
+			"lastIp":      "",
+			"lastUpdate":  int64(0),
+			"dnsRecordId": "",
+			"status":      "active",
+		}
+
+		appData, _ := json.Marshal(applianceRecord)
+		pingoKV.PutString("appliance:"+session.ApplianceID, string(appData), nil)
+
+		// Actualizar sesión del dispositivo a approved
+		session.Status = "approved"
+		session.SecretToken = generatedSecretToken
+		session.Subdomain = subdomain
+		sessData, _ := json.Marshal(session)
+		pingoKV.PutString("devcode:"+deviceCode, string(sessData), nil)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":      "ok",
+			"applianceId": session.ApplianceID,
+			"subdomain":   subdomain,
+		})
+	})
+
 	// /api/v1/ddns/heartbeat: Latido del appliance para actualizar su IP pública dinámicamente con cuota protegida
 	mux.HandleFunc("/api/v1/ddns/heartbeat", func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodPost && req.Method != http.MethodGet {
@@ -546,7 +840,7 @@ func main() {
 	c := cors.New(cors.Options{
 		AllowedOrigins: []string{"*"},
 		AllowedMethods: []string{"GET", "POST", "OPTIONS"},
-		AllowedHeaders: []string{"Content-Type", "X-Pingo-Auth"},
+		AllowedHeaders: []string{"Content-Type", "X-Pingo-Auth", "Authorization", "X-Admin-Key", "X-Appliance-ID"},
 	})
 	handler := recoverMiddleware(c.Handler(mux))
 
