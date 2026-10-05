@@ -324,6 +324,224 @@ func main() {
 		io.Copy(w, resp.Body)
 	})
 
+	// -------------------------------------------------------------
+	// 4. DDNS Multitenant & Cloud Hub (klitosan.com)
+	// -------------------------------------------------------------
+
+	// /api/v1/ddns/register: Registra o autoriza un nuevo appliance (requiere admin token o secret)
+	mux.HandleFunc("/api/v1/ddns/register", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		adminKey := cloudflare.Getenv("ADMIN_API_KEY")
+		clientKey := req.Header.Get("X-Admin-Key")
+		if adminKey != "" && clientKey != adminKey {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		var payload struct {
+			ApplianceID string `json:"applianceId"`
+			SecretToken string `json:"secretToken"`
+			Subdomain   string `json:"subdomain"` // Opcional, ej: "casa.appliances.klitosan.com"
+		}
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil || payload.ApplianceID == "" || payload.SecretToken == "" {
+			http.Error(w, "Invalid Payload. applianceId and secretToken required", http.StatusBadRequest)
+			return
+		}
+
+		defaultDomain := cloudflare.Getenv("DEFAULT_DDNS_DOMAIN")
+		if defaultDomain == "" {
+			defaultDomain = "appliances.klitosan.com"
+		}
+		subdomain := payload.Subdomain
+		if subdomain == "" {
+			subdomain = fmt.Sprintf("%s.%s", strings.ToLower(payload.ApplianceID), defaultDomain)
+		}
+
+		tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(payload.SecretToken)))
+		record := map[string]any{
+			"applianceId":  payload.ApplianceID,
+			"secretHash":   tokenHash,
+			"subdomain":    subdomain,
+			"lastIp":       "",
+			"lastUpdate":   int64(0),
+			"dnsRecordId":  "",
+			"status":       "active",
+		}
+
+		pingoKV, err := kv.NewNamespace(kvNamespace)
+		if err != nil {
+			http.Error(w, "KV Error", http.StatusInternalServerError)
+			return
+		}
+		data, _ := json.Marshal(record)
+		pingoKV.PutString("appliance:"+payload.ApplianceID, string(data), nil)
+
+		fmt.Fprintf(os.Stderr, "[DDNS] Appliance registrado: %s (%s)\n", payload.ApplianceID, subdomain)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":      "ok",
+			"applianceId": payload.ApplianceID,
+			"subdomain":   subdomain,
+		})
+	})
+
+	// /api/v1/ddns/heartbeat: Latido del appliance para actualizar su IP pública dinámicamente con cuota protegida
+	mux.HandleFunc("/api/v1/ddns/heartbeat", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost && req.Method != http.MethodGet {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		applianceID := req.Header.Get("X-Appliance-ID")
+		authToken := req.Header.Get("Authorization")
+		if applianceID == "" {
+			applianceID = req.URL.Query().Get("id")
+		}
+		if authToken == "" {
+			authToken = req.URL.Query().Get("token")
+		} else {
+			authToken = strings.TrimPrefix(authToken, "Bearer ")
+		}
+
+		if applianceID == "" || authToken == "" {
+			http.Error(w, "Missing appliance credentials (id and token)", http.StatusUnauthorized)
+			return
+		}
+
+		pingoKV, err := kv.NewNamespace(kvNamespace)
+		if err != nil {
+			http.Error(w, "KV Error", http.StatusInternalServerError)
+			return
+		}
+
+		recordStr, err := pingoKV.GetString("appliance:"+applianceID, nil)
+		if err != nil || recordStr == "" {
+			http.Error(w, "Appliance not found or unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		var record struct {
+			ApplianceID string `json:"applianceId"`
+			SecretHash  string `json:"secretHash"`
+			Subdomain   string `json:"subdomain"`
+			LastIP      string `json:"lastIp"`
+			LastUpdate  int64  `json:"lastUpdate"`
+			DNSRecordID string `json:"dnsRecordId"`
+			Status      string `json:"status"`
+		}
+		if err := json.Unmarshal([]byte(recordStr), &record); err != nil || record.Status != "active" {
+			http.Error(w, "Invalid appliance state or inactive", http.StatusForbidden)
+			return
+		}
+
+		// Validar token secreto
+		tokenHash := fmt.Sprintf("%x", sha256.Sum256([]byte(authToken)))
+		if tokenHash != record.SecretHash {
+			http.Error(w, "Invalid authentication token", http.StatusUnauthorized)
+			return
+		}
+
+		// 1. Obtener IP pública real del cliente a través de Cloudflare Edge
+		clientIP := req.Header.Get("CF-Connecting-IP")
+		if clientIP == "" {
+			clientIP = req.Header.Get("X-Real-IP")
+		}
+		if clientIP == "" {
+			clientIP = strings.Split(req.RemoteAddr, ":")[0]
+		}
+
+		now := time.Now().Unix()
+
+		// 2. PROTECCIÓN DE CUOTAS (Zero-API Cost):
+		// Si la IP no ha cambiado, no llamamos a la API de DNS de Cloudflare.
+		if clientIP == record.LastIP && record.DNSRecordID != "" {
+			// Throttle KV updates a no más de 1 vez cada 5 minutos
+			if now-record.LastUpdate > 300 {
+				record.LastUpdate = now
+				data, _ := json.Marshal(record)
+				pingoKV.PutString("appliance:"+applianceID, string(data), nil)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"status":    "unchanged",
+				"ip":        clientIP,
+				"subdomain": record.Subdomain,
+				"echReady":  true,
+			})
+			return
+		}
+
+		// 3. LA IP HA CAMBIADO O ES EL PRIMER REGISTRO: Invocar API de Cloudflare DNS
+		cfAPIToken := cloudflare.Getenv("CLOUDFLARE_API_TOKEN")
+		zoneID := cloudflare.Getenv("CLOUDFLARE_ZONE_ID")
+
+		dnsAction := "updated"
+		newDNSRecordID := record.DNSRecordID
+
+		if cfAPIToken != "" && zoneID != "" {
+			dnsPayload := map[string]any{
+				"type":    "A",
+				"name":    record.Subdomain,
+				"content": clientIP,
+				"ttl":     1,    // Auto
+				"proxied": false, // Tráfico directo a appliance (o true si pasa por CDN)
+			}
+			payloadBytes, _ := json.Marshal(dnsPayload)
+
+			var dnsURL, httpMethod string
+			if record.DNSRecordID == "" {
+				dnsURL = fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records", zoneID)
+				httpMethod = http.MethodPost
+			} else {
+				dnsURL = fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneID, record.DNSRecordID)
+				httpMethod = http.MethodPut
+			}
+
+			cfReq, _ := http.NewRequest(httpMethod, dnsURL, strings.NewReader(string(payloadBytes)))
+			cfReq.Header.Set("Authorization", "Bearer "+cfAPIToken)
+			cfReq.Header.Set("Content-Type", "application/json")
+
+			cfResp, cfErr := http.DefaultClient.Do(cfReq)
+			if cfErr != nil {
+				fmt.Fprintf(os.Stderr, "[DDNS] Error calling Cloudflare API: %v\n", cfErr)
+			} else {
+				defer cfResp.Body.Close()
+				var cfResult struct {
+					Success bool `json:"success"`
+					Result  struct {
+						ID string `json:"id"`
+					} `json:"result"`
+				}
+				json.NewDecoder(cfResp.Body).Decode(&cfResult)
+				if cfResult.Success && cfResult.Result.ID != "" {
+					newDNSRecordID = cfResult.Result.ID
+				}
+			}
+		} else {
+			dnsAction = "simulated_no_cf_credentials"
+		}
+
+		// 4. Persistir estado en KV
+		record.LastIP = clientIP
+		record.LastUpdate = now
+		record.DNSRecordID = newDNSRecordID
+		data, _ := json.Marshal(record)
+		pingoKV.PutString("appliance:"+applianceID, string(data), nil)
+
+		fmt.Fprintf(os.Stderr, "[DDNS] IP actualizada para %s -> %s (Subdominio: %s)\n", applianceID, clientIP, record.Subdomain)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":    dnsAction,
+			"ip":        clientIP,
+			"subdomain": record.Subdomain,
+			"echReady":  true,
+		})
+	})
+
 	// Setup CORS and Middleware
 	c := cors.New(cors.Options{
 		AllowedOrigins: []string{"*"},

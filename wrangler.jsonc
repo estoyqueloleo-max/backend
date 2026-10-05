@@ -22,7 +22,9 @@
 	"vars": {
 		"TURN_URL": "turn:global.relay.metered.ca:80",
 		"TURN_USERNAME": "fdae8eb2080d90479c02149c",
-		"TURN_CREDENTIAL": "M4xeXxJgtU47kqAH",
-		"TURN_STATIC_AUTH_SECRET": ""
+		"TURN_CREDENTIAL": "",
+		"TURN_STATIC_AUTH_SECRET": "",
+		"CLOUDFLARE_ZONE_ID": "",
+		"DEFAULT_DDNS_DOMAIN": "appliances.klitosan.com"
 	}
 }
